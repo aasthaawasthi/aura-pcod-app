@@ -1,41 +1,47 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# Root .gitignore - covers repo-root-level files and anything not already
+# handled by each package's own .gitignore (backend/.gitignore,
+# mobile/.gitignore). Nested .gitignore files apply independently, but a
+# few patterns are repeated here as a safety net.
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
-
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
+# OS
 .DS_Store
-*.pem
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
 
-# debug
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Env files anywhere in the repo
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# Claude Code / agent-local project config - personal to this machine
+.claude/
 
-# vercel
-.vercel
+# FUSE mount temp files (created transiently by remote-device file editing,
+# not part of the project)
+.fuse_hidden*
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# --- frontend/ ---
+# Not being pushed for now - excluded wholesale rather than just its
+# build artifacts. Remove this line whenever it's ready to be part of the
+# repo (and give it its own .gitignore for node_modules/.next/etc., like
+# backend/ and mobile/ have).
+/frontend/
+
+# --- backend/ and mobile/ ---
+# Each has its own .gitignore for its stack-specific files (node_modules,
+# data.sqlite, .expo, etc). Nothing extra needed here.

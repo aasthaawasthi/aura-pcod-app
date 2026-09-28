@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Aura - PCOD Care",
+    "slug": "aura-pcod-care",
+    "scheme": "aurapcod",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aurapcod.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FAD9E7",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.aurapcod.app"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Aura to access your photos so you can set a profile picture.",
+          "cameraPermission": "Allow Aura to use your camera so you can take a profile picture."
+        }
+      ]
+    ]
+  }
+}

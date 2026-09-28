@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# SQLite database + WAL/SHM files - local runtime data, never committed
+data.sqlite
+data.sqlite-*
+*.sqlite
+*.sqlite3
+*.db
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Coverage / build output (if added later)
+coverage/
+dist/
+build/
+
+# Lockfile intentionally excluded from version control, matching
+# frontend/ and mobile/ in this repo - see README if you want to change
+# this convention and commit it for reproducible installs instead.
+package-lock.json
