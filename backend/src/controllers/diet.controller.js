@@ -79,6 +79,11 @@ async function getDietWeek(req, res) {
 
 // GET /diet/month?year=&month= - powers a month calendar view like the
 // cycle page's summary calendar, one plate per day of the month.
+//
+// Days before the account was created have no history to show (the user
+// wasn't on the app yet), so they're returned as empty entries instead
+// of generating/caching a speculative plan for them - keeps the history
+// honest and avoids wasted writes for dates nobody will ever look at.
 async function getDietMonth(req, res) {
   try {
     const userId = req.user.id;
@@ -89,15 +94,21 @@ async function getDietMonth(req, res) {
     const daysInMonth = new Date(year, month, 0).getDate();
     const pad = (n) => String(n).padStart(2, "0");
     const userProfile = db.getUserProfile(userId);
+    const user = db.getUserById(userId);
+    const joinedDate = user && user.created_at ? String(user.created_at).slice(0, 10) : null;
 
     const days = [];
     for (let d = 1; d <= daysInMonth; d++) {
       const date = `${year}-${pad(month)}-${pad(d)}`;
+      if (joinedDate && date < joinedDate) {
+        days.push({ date, breakfast: null, lunch: null, snack: null, dinner: null });
+        continue;
+      }
       const diet = await getOrGeneratePlannedDiet(userId, date, userProfile);
       days.push({ date, ...diet });
     }
 
-    res.json({ success: true, data: { year, month, daysInMonth, days } });
+    res.json({ success: true, data: { year, month, daysInMonth, days, joinedDate } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Could not load this month's plate" });

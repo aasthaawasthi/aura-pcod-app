@@ -7,12 +7,10 @@ import { PeriodCalendar } from "../../components/PeriodCalendar";
 import { PeriodSummaryCalendar } from "../../components/PeriodSummaryCalendar";
 import { CyclePhaseTimeline } from "../../components/CyclePhaseTimeline";
 import { colors, phaseColors, space, periodColorScale, periodColorLabels, periodFlowSizes } from "../../lib/theme";
-import { todayLocalStr, addDaysToDateStr } from "../../lib/date";
+import { todayLocalStr } from "../../lib/date";
 
 const COLOR_SCALE = periodColorScale;
 const FLOW_DOT_SIZE = periodFlowSizes;
-const DEFAULT_MARK_SPAN = 6; // start date + 5 more days, marked by default
-
 type DayDetail = { flow: PeriodFlow; color: number };
 
 function todayISO() {
@@ -22,10 +20,6 @@ function todayISO() {
 function todayParts() {
   const now = new Date();
   return { year: now.getFullYear(), month: now.getMonth() + 1 };
-}
-
-function addDaysStr(dateStr: string, days: number) {
-  return addDaysToDateStr(dateStr, days);
 }
 
 export default function CycleScreen() {
@@ -42,6 +36,7 @@ export default function CycleScreen() {
   const [dayDetails, setDayDetails] = useState<Record<string, DayDetail>>({});
   const [bulkFlow, setBulkFlow] = useState<PeriodFlow>("medium");
   const [bulkColor, setBulkColor] = useState(5);
+  const [expandedDate, setExpandedDate] = useState<string | null>(null);
 
   const [summaryYear, setSummaryYear] = useState(real.year);
   const [summaryMonth, setSummaryMonth] = useState(real.month);
@@ -96,6 +91,10 @@ export default function CycleScreen() {
     setCalMonth(m);
   };
 
+  // Every tap toggles exactly the day tapped - no auto-marking of extra
+  // days. That used to seed the next 5 days automatically, which could
+  // silently reach past today (e.g. tapping near month-end) and made the
+  // save fail on a future date the user never intended to mark.
   const toggleDate = (date: string) => {
     setMarkedDates((prev) => {
       const next = new Set(prev);
@@ -106,20 +105,6 @@ export default function CycleScreen() {
           delete copy[date];
           return copy;
         });
-        return next;
-      }
-
-      if (prev.size === 0) {
-        // First tap picks the period start - mark it plus the next 5 days
-        // by default. The user can unmark any of these, or tap more days
-        // to extend the range further.
-        const seeded: Record<string, DayDetail> = {};
-        for (let i = 0; i < DEFAULT_MARK_SPAN; i++) {
-          const d = addDaysStr(date, i);
-          next.add(d);
-          seeded[d] = { flow: "medium", color: 5 };
-        }
-        setDayDetails((prevDetails) => ({ ...prevDetails, ...seeded }));
         return next;
       }
 
@@ -138,6 +123,7 @@ export default function CycleScreen() {
     setDayDetails({});
     setBulkFlow("medium");
     setBulkColor(5);
+    setExpandedDate(null);
   };
 
   const sortedMarkedDates = Array.from(markedDates).sort();
@@ -306,8 +292,7 @@ export default function CycleScreen() {
           <Card>
             <H2 style={{ marginBottom: space.xs }}>Log period</H2>
             <Muted style={{ marginBottom: space.md }}>
-              Step 1 - tap the day your period started. We'll mark it plus the next 5 days automatically; tap
-              any day to unmark it, or tap more days to extend the range.{"\n\n"}
+              Step 1 - tap each day your period lasted. Tap a marked day again to unmark it.{"\n\n"}
               Step 2 - each marked day gets a default flow and color below. Adjust them for all days at once, or
               tap into any single day to fine-tune it.
             </Muted>
@@ -322,7 +307,7 @@ export default function CycleScreen() {
             />
 
             {sortedMarkedDates.length > 0 && (
-              <View style={{ marginTop: space.lg, gap: space.md }}>
+              <View style={{ marginTop: space.lg, gap: space.sm }}>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                   <Body style={{ fontFamily: "Manrope_700Bold" }}>
                     {sortedMarkedDates.length} day{sortedMarkedDates.length > 1 ? "s" : ""} marked
@@ -332,17 +317,40 @@ export default function CycleScreen() {
                   </Pressable>
                 </View>
 
-                <View style={[styles.dayRow, { backgroundColor: colors.surfaceSunken, borderStyle: "dashed" }]}>
-                  <Body style={{ fontFamily: "Manrope_700Bold", marginBottom: space.xs }}>
-                    Set flow & color for all {sortedMarkedDates.length} days
+                {/* At-a-glance chip per marked day. Tapping one expands a
+                    compact editor for just that day below, instead of
+                    stacking a full flow+color card under every date. */}
+                <View style={styles.wrap}>
+                  {sortedMarkedDates.map((date) => {
+                    const isCustomized =
+                      dayDetails[date] && (dayDetails[date].flow !== bulkFlow || dayDetails[date].color !== bulkColor);
+                    const isExpanded = expandedDate === date;
+                    return (
+                      <Pressable
+                        key={date}
+                        onPress={() => setExpandedDate(isExpanded ? null : date)}
+                        style={[styles.dateChip, isExpanded && styles.dateChipActive]}
+                      >
+                        <Muted style={[styles.dateChipText, isExpanded && styles.dateChipTextActive]}>
+                          {formatShortDate(date)}
+                        </Muted>
+                        {isCustomized && <View style={styles.dateChipDot} />}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.bulkCard}>
+                  <Body style={{ fontFamily: "Manrope_700Bold", fontSize: 13, marginBottom: space.sm }}>
+                    Flow & color for all {sortedMarkedDates.length} days
                   </Body>
-                  <Muted style={{ marginBottom: 6 }}>Flow</Muted>
+                  <Muted style={{ marginBottom: 6, fontSize: 12 }}>Flow</Muted>
                   <View style={{ flexDirection: "row", gap: space.xs, marginBottom: space.sm }}>
                     {(["light", "medium", "heavy"] as const).map((f) => (
                       <Chip key={f} label={capitalize(f)} selected={bulkFlow === f} onPress={() => applyBulkFlow(f)} />
                     ))}
                   </View>
-                  <Muted style={{ marginBottom: 6 }}>Color (dark brown → bright red)</Muted>
+                  <Muted style={{ marginBottom: 6, fontSize: 12 }}>Color (dark brown → bright red)</Muted>
                   <View style={{ flexDirection: "row", gap: space.xs }}>
                     {COLOR_SCALE.map((hex, level) => (
                       <Pressable
@@ -356,48 +364,50 @@ export default function CycleScreen() {
                       />
                     ))}
                   </View>
-                  <Muted style={{ marginTop: space.sm }}>
-                    Tap a day below to give it a different flow or color than the rest.
-                  </Muted>
                 </View>
 
-                {sortedMarkedDates.map((date) => {
-                  const detail = dayDetails[date] || { flow: "medium", color: 5 };
-                  return (
-                    <View key={date} style={styles.dayRow}>
-                      <Body style={{ fontFamily: "Manrope_700Bold", marginBottom: space.xs }}>
-                        {formatDate(date)}
-                      </Body>
+                <Muted style={{ fontSize: 11.5 }}>
+                  Tap a date above to give that day a different flow or color - a dot marks any day you've
+                  customized.
+                </Muted>
 
-                      <Muted style={{ marginBottom: 6 }}>Flow</Muted>
-                      <View style={{ flexDirection: "row", gap: space.xs, marginBottom: space.sm }}>
-                        {(["light", "medium", "heavy"] as const).map((f) => (
-                          <Chip
-                            key={f}
-                            label={capitalize(f)}
-                            selected={detail.flow === f}
-                            onPress={() => updateDayDetail(date, { flow: f })}
-                          />
-                        ))}
-                      </View>
-
-                      <Muted style={{ marginBottom: 6 }}>Color (dark brown → bright red)</Muted>
-                      <View style={{ flexDirection: "row", gap: space.xs }}>
-                        {COLOR_SCALE.map((hex, level) => (
-                          <Pressable
-                            key={level}
-                            onPress={() => updateDayDetail(date, { color: level })}
-                            style={[
-                              styles.colorSwatch,
-                              { backgroundColor: hex },
-                              detail.color === level && styles.colorSwatchSelected,
-                            ]}
-                          />
-                        ))}
-                      </View>
+                {expandedDate && (
+                  <View style={styles.dayRowCompact}>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: space.sm }}>
+                      <Body style={{ fontFamily: "Manrope_700Bold", fontSize: 13 }}>{formatDate(expandedDate)}</Body>
+                      <Pressable onPress={() => setExpandedDate(null)} hitSlop={8}>
+                        <Muted style={{ color: colors.primary, fontSize: 12.5 }}>Done</Muted>
+                      </Pressable>
                     </View>
-                  );
-                })}
+
+                    <Muted style={{ marginBottom: 6, fontSize: 12 }}>Flow</Muted>
+                    <View style={{ flexDirection: "row", gap: space.xs, marginBottom: space.sm }}>
+                      {(["light", "medium", "heavy"] as const).map((f) => (
+                        <Chip
+                          key={f}
+                          label={capitalize(f)}
+                          selected={(dayDetails[expandedDate]?.flow || bulkFlow) === f}
+                          onPress={() => updateDayDetail(expandedDate, { flow: f })}
+                        />
+                      ))}
+                    </View>
+
+                    <Muted style={{ marginBottom: 6, fontSize: 12 }}>Color</Muted>
+                    <View style={{ flexDirection: "row", gap: space.xs }}>
+                      {COLOR_SCALE.map((hex, level) => (
+                        <Pressable
+                          key={level}
+                          onPress={() => updateDayDetail(expandedDate, { color: level })}
+                          style={[
+                            styles.colorSwatch,
+                            { backgroundColor: hex },
+                            (dayDetails[expandedDate]?.color ?? bulkColor) === level && styles.colorSwatchSelected,
+                          ]}
+                        />
+                      ))}
+                    </View>
+                  </View>
+                )}
               </View>
             )}
 
@@ -467,6 +477,9 @@ function InlineStat({ label, value }: { label: string; value: string }) {
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+function formatShortDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 function capitalize(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1).replace("_", " ");
 }
@@ -494,6 +507,51 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderRadius: 14,
     padding: space.sm,
+  },
+  wrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space.xs,
+  },
+  dateChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  dateChipActive: {
+    backgroundColor: colors.primarySoft,
+    borderColor: colors.primary,
+  },
+  dateChipText: {
+    fontSize: 12.5,
+  },
+  dateChipTextActive: {
+    color: colors.primaryStrong,
+    fontFamily: "Manrope_700Bold",
+  },
+  dateChipDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: colors.primary,
+  },
+  bulkCard: {
+    backgroundColor: colors.surfaceSunken,
+    borderRadius: 14,
+    padding: space.sm,
+  },
+  dayRowCompact: {
+    borderWidth: 1,
+    borderColor: colors.primary,
+    borderRadius: 14,
+    padding: space.sm,
+    backgroundColor: colors.primarySoft,
   },
   colorSwatch: {
     width: 28,

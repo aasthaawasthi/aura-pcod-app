@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { View, ScrollView, ActivityIndicator, Alert, Image, Pressable, StyleSheet } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { View, ScrollView, ActivityIndicator, Alert, Image, Pressable, Modal, StyleSheet } from "react-native";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -46,6 +46,24 @@ function formatPhenotype(type: string) {
   return type.split("_").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 }
 
+// Height is stored/saved as height_cm (matches the backend column and
+// what the diet/habit logic expects), but people think in feet & inches,
+// so we convert for display and back again on save.
+function cmToFeetInches(cm: number) {
+  const totalInches = cm / 2.54;
+  let feet = Math.floor(totalInches / 12);
+  let inches = Math.round(totalInches - feet * 12);
+  if (inches === 12) {
+    feet += 1;
+    inches = 0;
+  }
+  return { feet, inches };
+}
+
+function feetInchesToCm(feet: number, inches: number) {
+  return Math.round(((feet || 0) * 12 + (inches || 0)) * 2.54 * 10) / 10;
+}
+
 // A single tappable-to-edit row: label on the left, a borderless right-
 // aligned input on the right. This is the compact "iOS settings row"
 // pattern - it fits far more fields per screen than a stacked label +
@@ -56,6 +74,7 @@ function FieldRow({
   onChangeText,
   placeholder,
   keyboardType,
+  suffix,
   last,
 }: {
   label: string;
@@ -63,19 +82,61 @@ function FieldRow({
   onChangeText: (v: string) => void;
   placeholder?: string;
   keyboardType?: "default" | "email-address" | "phone-pad" | "number-pad" | "decimal-pad";
+  suffix?: string;
   last?: boolean;
 }) {
   return (
     <View style={[styles.fieldRow, !last && styles.fieldRowDivider]}>
       <Muted style={styles.fieldLabel}>{label}</Muted>
-      <Input
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        keyboardType={keyboardType}
-        autoCapitalize={keyboardType === "email-address" ? "none" : "sentences"}
-        style={styles.rowInput}
-      />
+      <View style={styles.fieldValueWrap}>
+        <Input
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={placeholder}
+          keyboardType={keyboardType}
+          autoCapitalize={keyboardType === "email-address" ? "none" : "sentences"}
+          style={[styles.rowInput, suffix ? styles.rowInputWithSuffix : null]}
+        />
+        {!!suffix && <Muted style={styles.unitText}>{suffix}</Muted>}
+      </View>
+    </View>
+  );
+}
+
+// Height gets its own row - two small ft/in inputs instead of one field,
+// since that's how people actually think about and enter their height.
+function HeightRow({
+  feet,
+  onFeetChange,
+  inches,
+  onInchesChange,
+}: {
+  feet: string;
+  onFeetChange: (v: string) => void;
+  inches: string;
+  onInchesChange: (v: string) => void;
+}) {
+  return (
+    <View style={[styles.fieldRow, styles.fieldRowDivider]}>
+      <Muted style={styles.fieldLabel}>Height</Muted>
+      <View style={styles.fieldValueWrap}>
+        <Input
+          value={feet}
+          onChangeText={onFeetChange}
+          placeholder="5"
+          keyboardType="number-pad"
+          style={[styles.rowInput, styles.heightInput]}
+        />
+        <Muted style={styles.unitText}>ft</Muted>
+        <Input
+          value={inches}
+          onChangeText={onInchesChange}
+          placeholder="6"
+          keyboardType="number-pad"
+          style={[styles.rowInput, styles.heightInput, { marginLeft: space.sm }]}
+        />
+        <Muted style={styles.unitText}>in</Muted>
+      </View>
     </View>
   );
 }
@@ -95,8 +156,10 @@ export default function Profile() {
   const [profilePicture, setProfilePicture] = useState("");
   const [age, setAge] = useState("");
   const [gender, setGender] = useState("");
-  const [heightCm, setHeightCm] = useState("");
+  const [heightFt, setHeightFt] = useState("");
+  const [heightIn, setHeightIn] = useState("");
   const [weightKg, setWeightKg] = useState("");
+  const [photoPreviewOpen, setPhotoPreviewOpen] = useState(false);
 
   const [goals, setGoals] = useState<string[]>([]);
   const [foodPreference, setFoodPreference] = useState("veg");
@@ -108,15 +171,30 @@ export default function Profile() {
     }
   }, []);
 
+  // Populate the form from the server's profile ONLY the first time it
+  // becomes available. Refreshing `profile` later (e.g. the photo picker's
+  // own save-then-refresh) must NOT re-run this - otherwise it silently
+  // overwrites whatever the user is mid-typing in other fields (like their
+  // name) with the older server value, and the next "Save changes" then
+  // re-saves that stale data right back.
+  const hydratedRef = useRef(false);
   useEffect(() => {
-    if (profile) {
+    if (profile && !hydratedRef.current) {
+      hydratedRef.current = true;
       setName(profile.name || "");
       setEmail(profile.email || "");
       setPhone(profile.phone || "");
       setProfilePicture(profile.profile_picture || "");
       setAge(profile.age != null ? String(profile.age) : "");
       setGender(profile.gender || "");
-      setHeightCm(profile.height_cm != null ? String(profile.height_cm) : "");
+      if (profile.height_cm != null) {
+        const { feet, inches } = cmToFeetInches(profile.height_cm);
+        setHeightFt(String(feet));
+        setHeightIn(String(inches));
+      } else {
+        setHeightFt("");
+        setHeightIn("");
+      }
       setWeightKg(profile.weight_kg != null ? String(profile.weight_kg) : "");
       setGoals(profile.goals || []);
       setFoodPreference(profile.food_preference || "veg");
@@ -133,10 +211,15 @@ export default function Profile() {
         name: name.trim() || null,
         email: email.trim(),
         phone: phone.trim() || null,
-        profile_picture: profilePicture.trim() || null,
+        // profile_picture deliberately left out here: the photo picker
+        // already saves it separately the instant a new photo is chosen
+        // (see pickAndSavePhoto below), so resending it on every ordinary
+        // "Save changes" tap only means re-uploading a ~100-200KB base64
+        // blob unchanged, every time - which is slow and, on a weak Wi-Fi
+        // connection, exactly what was timing out this save.
         age: age ? parseInt(age, 10) : null,
         gender: gender || null,
-        height_cm: heightCm ? parseFloat(heightCm) : null,
+        height_cm: heightFt || heightIn ? feetInchesToCm(parseInt(heightFt, 10) || 0, parseInt(heightIn, 10) || 0) : null,
         weight_kg: weightKg ? parseFloat(weightKg) : null,
         goals,
         food_preference: foodPreference,
@@ -224,15 +307,20 @@ export default function Profile() {
       {/* Header: soft band + overlapping avatar, compact identity block */}
       <View style={styles.headerBand}>
         <View style={styles.avatarWrap}>
-          {profilePicture ? (
-            <Image source={{ uri: profilePicture }} style={styles.avatarImage} />
-          ) : (
-            <View style={styles.avatarFallback}>
-              <Body style={{ fontFamily: "Manrope_700Bold", fontSize: 22, color: colors.primary }}>
-                {initials(name, email)}
-              </Body>
-            </View>
-          )}
+          <Pressable
+            onPress={() => profilePicture && setPhotoPreviewOpen(true)}
+            disabled={!profilePicture}
+          >
+            {profilePicture ? (
+              <Image source={{ uri: profilePicture }} style={styles.avatarImage} />
+            ) : (
+              <View style={styles.avatarFallback}>
+                <Body style={{ fontFamily: "Manrope_700Bold", fontSize: 22, color: colors.primary }}>
+                  {initials(name, email)}
+                </Body>
+              </View>
+            )}
+          </Pressable>
           {photoSaving && (
             <View style={styles.avatarLoadingOverlay}>
               <ActivityIndicator color={colors.white} size="small" />
@@ -262,9 +350,9 @@ export default function Profile() {
               <FieldRow label="Name" value={name} onChangeText={setName} placeholder="Your name" />
               <FieldRow label="Email" value={email} onChangeText={setEmail} placeholder="you@example.com" keyboardType="email-address" />
               <FieldRow label="Phone" value={phone} onChangeText={setPhone} placeholder="Phone number" keyboardType="phone-pad" />
-              <FieldRow label="Age" value={age} onChangeText={setAge} placeholder="Years" keyboardType="number-pad" />
-              <FieldRow label="Height" value={heightCm} onChangeText={setHeightCm} placeholder="cm" keyboardType="decimal-pad" />
-              <FieldRow label="Weight" value={weightKg} onChangeText={setWeightKg} placeholder="kg" keyboardType="decimal-pad" last />
+              <FieldRow label="Age" value={age} onChangeText={setAge} placeholder="Years" keyboardType="number-pad" suffix="yrs" />
+              <HeightRow feet={heightFt} onFeetChange={setHeightFt} inches={heightIn} onInchesChange={setHeightIn} />
+              <FieldRow label="Weight" value={weightKg} onChangeText={setWeightKg} placeholder="kg" keyboardType="decimal-pad" suffix="kg" last />
             </Card>
 
             <Card style={styles.listCard}>
@@ -279,6 +367,11 @@ export default function Profile() {
             <Pressable style={styles.logoutRow} onPress={confirmSignOut}>
               <Ionicons name="log-out-outline" size={17} color={colors.notice} />
               <Body style={{ color: colors.notice, fontFamily: "Manrope_700Bold", fontSize: 14 }}>Log out</Body>
+            </Pressable>
+
+            <Pressable style={styles.logoutRow} onPress={() => router.push("/account-delete")}>
+              <Ionicons name="trash-outline" size={17} color={colors.notice} />
+              <Body style={{ color: colors.notice, fontFamily: "Manrope_700Bold", fontSize: 14 }}>Delete account</Body>
             </Pressable>
           </>
         ) : (
@@ -335,6 +428,24 @@ export default function Profile() {
         {saved && !error && <Muted style={{ color: colors.secondary, textAlign: "center", marginBottom: 4 }}>Saved!</Muted>}
         <PrimaryButton title="Save changes" onPress={save} loading={saving} />
       </View>
+
+      {/* Fullscreen photo preview - tap the avatar to see it larger, tap
+          anywhere (or the close button) to dismiss, WhatsApp-style. */}
+      <Modal
+        visible={photoPreviewOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPhotoPreviewOpen(false)}
+      >
+        <Pressable style={styles.previewBackdrop} onPress={() => setPhotoPreviewOpen(false)}>
+          {profilePicture ? (
+            <Image source={{ uri: profilePicture }} style={styles.previewImage} resizeMode="contain" />
+          ) : null}
+          <Pressable style={styles.previewCloseBtn} onPress={() => setPhotoPreviewOpen(false)} hitSlop={12}>
+            <Ionicons name="close" size={26} color={colors.white} />
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Screen>
   );
 }
@@ -456,5 +567,44 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
     borderTopWidth: 1,
     borderTopColor: colors.border,
+  },
+  fieldValueWrap: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+  },
+  rowInputWithSuffix: {
+    flex: 0,
+    minWidth: 30,
+  },
+  heightInput: {
+    flex: 0,
+    minWidth: 20,
+  },
+  unitText: {
+    fontSize: 12.5,
+    marginLeft: 3,
+  },
+  previewBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  previewImage: {
+    width: "92%",
+    height: "70%",
+  },
+  previewCloseBtn: {
+    position: "absolute",
+    top: 54,
+    right: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "rgba(255,255,255,0.15)",
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

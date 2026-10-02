@@ -10,5 +10,7 @@ router.use("/daily-log", auth, require("./dailyLog.routes"));
 router.use("/habits", auth, require("./habits.routes"));
 router.use("/diet", auth, require("./diet.routes"));
 router.use("/cycle", auth, require("./cycle.routes"));
+router.use("/exercise", auth, require("./exercise.routes"));
+router.use("/account", auth, require("./account.routes"));
 
 module.exports = router;

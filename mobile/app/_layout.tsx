@@ -41,10 +41,14 @@ export default function RootLayout() {
       >
         <Stack.Screen name="index" />
         <Stack.Screen name="login" />
-        <Stack.Screen name="signup" />
         <Stack.Screen name="onboarding/index" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="diet-plan" />
+        <Stack.Screen name="exercise/[id]" />
+        <Stack.Screen name="info/[slug]" />
+        <Stack.Screen name="settings/notifications" />
+        <Stack.Screen name="settings/reminders" />
+        <Stack.Screen name="account-delete" />
       </Stack>
     </AuthProvider>
   );

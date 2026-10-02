@@ -5,8 +5,8 @@ type AuthState = {
   isLoading: boolean;
   isAuthenticated: boolean;
   profile: Profile | null;
-  signUp: (email: string, password: string, name?: string) => Promise<void>;
-  signIn: (email: string, password: string) => Promise<void>;
+  requestOtp: (phone: string) => Promise<{ devOtp?: string }>;
+  verifyOtp: (phone: string, otp: string) => Promise<void>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 };
@@ -44,15 +44,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [refreshProfile]);
 
-  const signUp = async (email: string, password: string, name?: string) => {
-    const data = await authApi.register(email, password, name);
-    await setToken(data.token);
-    setIsAuthenticated(true);
-    await refreshProfile();
+  // Sends (or resends) an OTP to a phone number. Doesn't touch auth state -
+  // the phone isn't logged in until the code is verified.
+  const requestOtp = async (phone: string) => {
+    const data = await authApi.requestOtp(phone);
+    return { devOtp: data.devOtp };
   };
 
-  const signIn = async (email: string, password: string) => {
-    const data = await authApi.login(email, password);
+  // Verifying the OTP both logs in an existing account and registers a new
+  // one - there's no separate sign-up step for phone+OTP.
+  const verifyOtp = async (phone: string, otp: string) => {
+    const data = await authApi.verifyOtp(phone, otp);
     await setToken(data.token);
     setIsAuthenticated(true);
     await refreshProfile();
@@ -66,7 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ isLoading, isAuthenticated, profile, signUp, signIn, signOut, refreshProfile }}
+      value={{ isLoading, isAuthenticated, profile, requestOtp, verifyOtp, signOut, refreshProfile }}
     >
       {children}
     </AuthContext.Provider>

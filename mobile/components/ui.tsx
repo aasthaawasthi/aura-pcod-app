@@ -27,20 +27,34 @@ export function Body({
   children,
   style,
   onPress,
+  numberOfLines,
 }: {
   children: React.ReactNode;
   style?: any;
   onPress?: () => void;
+  numberOfLines?: number;
 }) {
   return (
-    <Text style={[styles.body, style]} onPress={onPress}>
+    <Text style={[styles.body, style]} onPress={onPress} numberOfLines={numberOfLines}>
       {children}
     </Text>
   );
 }
 
-export function Muted({ children, style }: { children: React.ReactNode; style?: any }) {
-  return <Text style={[styles.muted, style]}>{children}</Text>;
+export function Muted({
+  children,
+  style,
+  numberOfLines,
+}: {
+  children: React.ReactNode;
+  style?: any;
+  numberOfLines?: number;
+}) {
+  return (
+    <Text style={[styles.muted, style]} numberOfLines={numberOfLines}>
+      {children}
+    </Text>
+  );
 }
 
 export function Card({ children, style }: { children: React.ReactNode; style?: ViewStyle }) {

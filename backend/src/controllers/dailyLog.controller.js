@@ -23,7 +23,11 @@ exports.createDailyLog = async (req, res) => {
 
 exports.getRecentLogs = async (req, res) => {
   try {
-    const logs = db.getRecentLogs(req.user.id, 14);
+    // Default to a large window so the check-in trend chart can show a
+    // user's full history, not just the last couple of weeks. A client
+    // can still ask for a smaller slice via ?limit=.
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : 400;
+    const logs = db.getRecentLogs(req.user.id, limit);
     res.json({ success: true, data: logs });
   } catch (err) {
     console.error(err);

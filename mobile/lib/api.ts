@@ -69,18 +69,35 @@ async function requestFull(
     if (token) headers.Authorization = `Bearer ${token}`;
   }
 
+  // Without this, a request that hangs (weak Wi-Fi, server not actually
+  // reachable, a large upload stalling) sits "loading" forever with no
+  // feedback - this gives it a hard cutoff and a clear, specific error
+  // instead of a silent, indefinite spinner.
+  const REQUEST_TIMEOUT_MS = 20000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
   let res: Response;
   try {
     res = await fetch(`${API_BASE_URL}${path}`, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
     });
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new ApiError(
+        `The request timed out after ${REQUEST_TIMEOUT_MS / 1000}s. Check your Wi-Fi connection and that the backend is reachable, then try again.`,
+        0
+      );
+    }
     throw new ApiError(
       `Could not reach the server at ${API_BASE_URL}. Make sure the backend is running and your phone is on the same Wi-Fi network.`,
       0
     );
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   let json: any = {};
@@ -117,19 +134,19 @@ async function request<T>(
 
 // ---------- Auth ----------
 export const authApi = {
-  register: (email: string, password: string, name?: string) =>
-    request<{ token: string; userId: number }>("/auth/register", {
+  requestOtp: (phone: string) =>
+    request<{ phone: string; expiresInSeconds: number; devOtp?: string }>("/auth/otp/request", {
       method: "POST",
-      body: { email, password, name },
+      body: { phone },
       auth: false,
     }),
-  login: (email: string, password: string) =>
-    request<{ token: string; userId: number }>("/auth/login", {
+  verifyOtp: (phone: string, otp: string) =>
+    request<{ token: string; userId: number }>("/auth/otp/verify", {
       method: "POST",
-      body: { email, password },
+      body: { phone, otp },
       auth: false,
     }),
-  me: () => request<{ id: number; email: string; name: string | null }>("/auth/me"),
+  me: () => request<{ id: number; phone: string | null; email: string | null; name: string | null }>("/auth/me"),
 };
 
 // ---------- Profile ----------
@@ -172,8 +189,13 @@ export type DailyLog = {
 export const dailyLogApi = {
   today: () => request<DailyLog | null>("/daily-log/today"),
   recent: () => request<DailyLog[]>("/daily-log"),
-  save: (payload: { mood?: string; energy?: number; symptoms?: string[]; note?: string; logDate?: string }) =>
-    request<DailyLog>("/daily-log", { method: "POST", body: payload }),
+  save: (payload: {
+    mood?: string | null;
+    energy?: number | null;
+    symptoms?: string[];
+    note?: string;
+    logDate?: string;
+  }) => request<DailyLog>("/daily-log", { method: "POST", body: payload }),
 };
 
 // ---------- Habits ----------
@@ -227,8 +249,21 @@ export type Diet = {
   dinner: string;
 };
 
-export type DietDay = Diet & { date: string; region?: string };
-export type DietMonth = { year: number; month: number; daysInMonth: number; days: DietDay[] };
+export type DietDay = {
+  date: string;
+  region?: string;
+  breakfast: string | null;
+  lunch: string | null;
+  snack: string | null;
+  dinner: string | null;
+};
+export type DietMonth = {
+  year: number;
+  month: number;
+  daysInMonth: number;
+  days: DietDay[];
+  joinedDate?: string | null;
+};
 
 export const dietApi = {
   today: () => request<Diet>("/diet/today"),
@@ -237,6 +272,23 @@ export const dietApi = {
   month: (year: number, month: number) => request<DietMonth>(`/diet/month?year=${year}&month=${month}`),
   swap: (date: string, meal: "breakfast" | "lunch" | "snack" | "dinner") =>
     request<Diet>("/diet/swap", { method: "POST", body: { date, meal } }),
+};
+
+// ---------- Exercise ----------
+export type Exercise = {
+  id: string;
+  name: string;
+  goals: string[];
+  durationLabel: string;
+  level: string;
+  description: string;
+  youtubeId: string;
+  thumbnailUrl: string;
+  watchUrl: string;
+};
+
+export const exerciseApi = {
+  today: () => request<Exercise[]>("/exercise/today"),
 };
 
 // ---------- Cycle ----------
@@ -271,4 +323,29 @@ export const cycleApi = {
     request("/cycle/log-days", { method: "POST", body: { days } }),
   periodDays: (year: number, month: number) =>
     request<PeriodDay[]>(`/cycle/period-days?year=${year}&month=${month}`),
+};
+
+// ---------- Account deletion ----------
+// Export/deletion aren't plain JSON round trips (export streams a binary
+// zip; deletion has its own OTP-verification shape), so they get their
+// own small wrapper here rather than going through request()/requestFull().
+export const accountApi = {
+  // Sends a fresh OTP to the logged-in user's own phone, as the
+  // "prove it's really you right now" step before deletion - mirrors
+  // login's OTP flow but scoped to whoever's already signed in.
+  requestDeleteOtp: () =>
+    request<{ phone: string; expiresInSeconds: number; devOtp?: string }>(
+      "/account/delete/request-otp",
+      { method: "POST" }
+    ),
+  // Verifies the OTP and, on success, permanently deletes the account and
+  // everything tied to it. `alreadyDeleted: true` means the account was
+  // already gone when this call landed (e.g. a retry after a dropped
+  // response to an earlier successful call) - that's a success case, not
+  // an error, since the end state ("account's gone") is what was wanted.
+  confirmDelete: (otp: string, reasonCode?: string, note?: string) =>
+    request<{ alreadyDeleted: boolean }>("/account/delete/confirm", {
+      method: "POST",
+      body: { otp, reasonCode, note },
+    }),
 };

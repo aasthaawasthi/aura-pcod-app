@@ -1,5 +1,6 @@
 const db = require("../db");
 const { classifyPhenotype } = require("../services/profile/phenotype");
+const { toLocalDateStr } = require("../utils/date");
 
 exports.getProfile = async (req, res) => {
   try {
@@ -42,8 +43,13 @@ exports.saveProfile = async (req, res) => {
       return res.status(400).json({ success: false, message: "regions must be an array" });
     }
 
-    if (email !== undefined) {
-      const existing = db.getUserByEmail(email);
+    // Treat a blank email as "no email", not as a real value to be
+    // unique-checked - otherwise two accounts that both simply haven't
+    // set an email (phone-only sign-ups included) collide with each
+    // other on an empty string and block an unrelated save.
+    const normalizedEmail = email !== undefined ? (String(email).trim() || null) : undefined;
+    if (normalizedEmail) {
+      const existing = db.getUserByEmail(normalizedEmail);
       if (existing && existing.id !== req.user.id) {
         return res.status(400).json({ success: false, message: "That email is already in use." });
       }
@@ -57,7 +63,7 @@ exports.saveProfile = async (req, res) => {
 
     let updated = db.saveUserProfile(req.user.id, {
       name,
-      email,
+      email: normalizedEmail,
       phone,
       profile_picture,
       goals,
@@ -77,6 +83,16 @@ exports.saveProfile = async (req, res) => {
     // what the user is actually trying to work on.
     if (goals !== undefined) {
       db.syncRecommendedHabits(req.user.id, updated.goals);
+    }
+
+    // Food preference/regions/goals all feed the diet generator. Diets are
+    // cached per date (see diet.controller.js) for consistency and
+    // performance, but that means a stale cached diet would otherwise keep
+    // showing on Home even after the user changes their preferences here.
+    // Clear today's (and any future planned) cached diet so the next
+    // fetch regenerates one that reflects the new preferences.
+    if (food_preference !== undefined || regions !== undefined || goals !== undefined) {
+      db.clearDietsFrom(req.user.id, toLocalDateStr());
     }
 
     res.json({ success: true, data: updated });

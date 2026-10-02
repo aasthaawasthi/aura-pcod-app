@@ -1,34 +1,39 @@
 import React, { useCallback, useState } from "react";
-import { View, ScrollView, RefreshControl, ActivityIndicator, Pressable, StyleSheet } from "react-native";
+import { View, ScrollView, RefreshControl, ActivityIndicator, Pressable, Image, StyleSheet } from "react-native";
 import { useFocusEffect, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "../../lib/auth-context";
-import { cycleApi, dietApi, habitsApi, dailyLogApi, CycleInfo, Diet, Habit, DailyLog } from "../../lib/api";
+import { cycleApi, dietApi, habitsApi, dailyLogApi, exerciseApi, CycleInfo, Diet, Habit, DailyLog, Exercise } from "../../lib/api";
 import { Screen, H1, H2, Body, Muted, Card } from "../../components/ui";
 import { CyclePhaseTimeline } from "../../components/CyclePhaseTimeline";
-import { colors, phaseColors, space } from "../../lib/theme";
+import SideNav, { initials } from "../../components/SideNav";
+import { colors, phaseColors, space, radius } from "../../lib/theme";
 
 export default function Home() {
   const { profile } = useAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const [cycle, setCycle] = useState<CycleInfo | null>(null);
   const [diet, setDiet] = useState<Diet | null>(null);
   const [habits, setHabits] = useState<Habit[]>([]);
   const [todayLog, setTodayLog] = useState<DailyLog | null>(null);
+  const [exercises, setExercises] = useState<Exercise[]>([]);
 
   const load = useCallback(async () => {
     try {
-      const [c, d, h, log] = await Promise.all([
+      const [c, d, h, log, ex] = await Promise.all([
         cycleApi.get(),
         dietApi.today(),
         habitsApi.list(),
         dailyLogApi.today().catch(() => null),
+        exerciseApi.today().catch(() => []),
       ]);
       setCycle(c);
       setDiet(d);
       setHabits(h);
       setTodayLog(log);
+      setExercises(ex);
     } catch {
       // surfaced inline per-card would be ideal; keep MVP simple
     } finally {
@@ -66,10 +71,19 @@ export default function Home() {
         contentContainerStyle={{ padding: space.lg, paddingTop: space.xxl, gap: space.md }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       >
-        <View>
-          <Muted>Hey there</Muted>
-          <H1>Your dashboard</H1>
-          <Muted style={{ marginTop: 2 }}>Tap any card to open that section.</Muted>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <Pressable onPress={() => setNavOpen(true)} hitSlop={8}>
+            {profile?.profile_picture ? (
+              <Image source={{ uri: profile.profile_picture }} style={styles.dp} />
+            ) : (
+              <View style={styles.dpFallback}>
+                <Body style={{ fontFamily: "Manrope_700Bold", fontSize: 15, color: colors.primary }}>
+                  {initials(profile?.name || "", profile?.email || "")}
+                </Body>
+              </View>
+            )}
+          </Pressable>
+          <H1 style={{ fontSize: 21, marginLeft: space.sm }}>Hi, {profile?.name || "there"}</H1>
         </View>
 
         {/* Cycle */}
@@ -178,6 +192,17 @@ export default function Home() {
             <DietRow label="Lunch" value={diet.lunch} />
             <DietRow label="Snack" value={diet.snack} />
             <DietRow label="Dinner" value={diet.dinner} />
+
+            {exercises.length > 0 && (
+              <View style={styles.exerciseSection}>
+                <Muted style={{ marginBottom: space.xs }}>Suggested exercise</Muted>
+                <View style={{ flexDirection: "row", gap: space.sm }}>
+                  {exercises.map((ex) => (
+                    <ExerciseTile key={ex.id} exercise={ex} />
+                  ))}
+                </View>
+              </View>
+            )}
           </SectionCard>
         )}
 
@@ -188,6 +213,8 @@ export default function Home() {
           </Muted>
         )}
       </ScrollView>
+
+      <SideNav visible={navOpen} onClose={() => setNavOpen(false)} />
     </Screen>
   );
 }
@@ -239,6 +266,35 @@ function DietRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+// A small tappable thumbnail card for one suggested exercise - tapping it
+// opens the full-screen detail page with the how-to video, without
+// triggering the outer "Today's plate" card's own tap-through to the
+// diet plan (RN gives the nested Pressable the touch, not its ancestor).
+function ExerciseTile({ exercise }: { exercise: Exercise }) {
+  return (
+    <Pressable
+      style={({ pressed }) => [styles.exerciseTile, pressed && { opacity: 0.85 }]}
+      onPress={() =>
+        router.push({
+          pathname: "/exercise/[id]",
+          params: { id: exercise.id, data: JSON.stringify(exercise) },
+        })
+      }
+    >
+      <Image source={{ uri: exercise.thumbnailUrl }} style={styles.exerciseThumb} />
+      <View style={styles.exercisePlayBadge}>
+        <Ionicons name="play" size={11} color={colors.white} />
+      </View>
+      <Body style={styles.exerciseName} numberOfLines={1}>
+        {exercise.name}
+      </Body>
+      <Muted style={{ fontSize: 11 }} numberOfLines={1}>
+        {exercise.durationLabel}
+      </Muted>
+    </Pressable>
+  );
+}
+
 function formatDate(iso: string) {
   const d = new Date(iso);
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -246,6 +302,20 @@ function formatDate(iso: string) {
 
 const styles = StyleSheet.create({
   center: { alignItems: "center", justifyContent: "center" },
+  dp: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.surfaceSunken,
+  },
+  dpFallback: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.surfaceSunken,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   cardPressed: { opacity: 0.85 },
   cardHeader: {
     flexDirection: "row",
@@ -269,4 +339,36 @@ const styles = StyleSheet.create({
     marginBottom: space.sm,
   },
   habitRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 6 },
+  exerciseSection: {
+    marginTop: space.xs,
+    paddingTop: space.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  exerciseTile: {
+    flex: 1,
+    maxWidth: "48%",
+  },
+  exerciseThumb: {
+    width: "100%",
+    aspectRatio: 16 / 10,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceSunken,
+  },
+  exercisePlayBadge: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  exerciseName: {
+    fontFamily: "Manrope_700Bold",
+    fontSize: 12.5,
+    marginTop: 5,
+  },
 });

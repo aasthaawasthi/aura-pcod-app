@@ -17,15 +17,15 @@ async function generateDiet({ userProfile, dailyLogs, habitLogs, forDate }) {
   const regions = userProfile.regions && userProfile.regions.length ? userProfile.regions : [userProfile.region || "north"];
   const region = pickRegionForDate(regions, date);
 
-  let diet = getBaseDiet(userProfile.food_preference, region);
+  let diet = getBaseDiet(userProfile.food_preference, region, date);
 
   const goals = userProfile.goals && userProfile.goals.length ? userProfile.goals : userProfile.goal ? [userProfile.goal] : [];
 
   // Step 1: Goal-based modifications
-  diet = applyGoalRules(diet, goals);
+  diet = applyGoalRules(diet, goals, date, userProfile.food_preference);
 
   // Step 2: PCOD profile rules
-  diet = applyProfileRules(diet, userProfile.profile_type);
+  diet = applyProfileRules(diet, userProfile.profile_type, date);
 
   // Step 3: Symptom-based rules (today/past only - needs real log data)
   if (dailyLogs) {

@@ -1,5 +1,5 @@
 const { db, seedDefaultHabits } = require("./sqlite");
-const { toLocalDateStr } = require("../utils/date");
+const { toLocalDateStr, addDaysToDateStr } = require("../utils/date");
 const { recommendHabitsForGoals } = require("../services/habits/habitRecommender");
 
 // ---------- Users ----------
@@ -23,6 +23,36 @@ function getUserByEmail(email) {
 
 function getUserById(id) {
   return db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+}
+
+function getUserByPhone(phone) {
+  return db.prepare("SELECT * FROM users WHERE phone = ?").get(phone);
+}
+
+// Phone+OTP signup: a user "registers" the first time they successfully
+// verify an OTP for a phone number that isn't already on an account -
+// there's no separate signup step, so this just creates a bare row (no
+// name/email yet) plus the same default profile/habits a normal signup gets.
+function createUserByPhone(phone) {
+  const info = db.prepare("INSERT INTO users (phone) VALUES (?)").run(phone);
+  const userId = info.lastInsertRowid;
+
+  db.prepare("INSERT INTO profiles (user_id) VALUES (?)").run(userId);
+  seedDefaultHabits(userId);
+
+  return userId;
+}
+
+function setUserOtp(userId, otpCode, expiresAt) {
+  db.prepare("UPDATE users SET otp_code = ?, otp_expires_at = ? WHERE id = ?").run(
+    otpCode,
+    expiresAt,
+    userId
+  );
+}
+
+function clearUserOtp(userId) {
+  db.prepare("UPDATE users SET otp_code = NULL, otp_expires_at = NULL WHERE id = ?").run(userId);
 }
 
 // ---------- Profile ----------
@@ -113,7 +143,23 @@ function savePhenotypeAnswers(userId, answers) {
 }
 
 // ---------- Daily logs ----------
+// A field left `undefined` here means "the client didn't touch this field
+// this save" and must NOT overwrite whatever's already stored for that
+// day - only a field that's actually present (including an explicit
+// `null`/empty value, meaning "clear it") gets written. This is what lets
+// someone add just today's energy level later in the day without wiping
+// the mood/symptoms/note they already logged that morning. The merge is
+// resolved here in JS (against any existing row) before anything touches
+// SQL, so there's no ambiguity between "untouched" and "explicitly
+// cleared" the way relying on SQL NULL/COALESCE would have.
 function upsertDailyLog(userId, { logDate, mood, energy, symptoms, note }) {
+  const existing = getDailyLogByDate(userId, logDate);
+
+  const finalMood = mood !== undefined ? mood : existing ? existing.mood : null;
+  const finalEnergy = energy !== undefined ? energy : existing ? existing.energy : null;
+  const finalSymptoms = symptoms !== undefined ? symptoms : existing ? existing.symptoms : [];
+  const finalNote = note !== undefined ? note : existing ? existing.note : null;
+
   db.prepare(
     `INSERT INTO daily_logs (user_id, log_date, mood, energy, symptoms_json, note)
      VALUES (?, ?, ?, ?, ?, ?)
@@ -122,7 +168,7 @@ function upsertDailyLog(userId, { logDate, mood, energy, symptoms, note }) {
        energy = excluded.energy,
        symptoms_json = excluded.symptoms_json,
        note = excluded.note`
-  ).run(userId, logDate, mood, energy, JSON.stringify(symptoms || []), note || null);
+  ).run(userId, logDate, finalMood, finalEnergy, JSON.stringify(finalSymptoms || []), finalNote || null);
   return getDailyLogByDate(userId, logDate);
 }
 
@@ -352,18 +398,56 @@ function isDayComplete(userId, logDate) {
   return completedCount >= activeHabitCount;
 }
 
+// How far back a streak can possibly reach before we stop counting - caps
+// the work below to one bounded query no matter how long someone's been
+// using the app, instead of walking backward one day (and one DB round
+// trip) at a time with no floor. A streak longer than this is vanishingly
+// unlikely to matter to anyone, and the ring/UI never shows more than this
+// anyway.
+const MAX_STREAK_LOOKBACK_DAYS = 400;
+
 // Consecutive complete days ending today (or yesterday, if today isn't
 // finished yet - logging in the evening shouldn't zero out the streak).
+//
+// Previously this walked backward one calendar day at a time, running two
+// fresh SQL queries per day via isDayComplete() with no lower bound - for
+// an account with a long history that meant hundreds of synchronous
+// round trips (and statement re-prepares) on every page load, which is
+// exactly the kind of thing that makes a request crawl and trips the
+// client's 20s timeout. Fetching one bounded window of "which dates had
+// every habit done" up front and then just walking an in-memory Set is
+// the same result with a single query.
 function getDayStreak(userId, today = new Date()) {
+  const activeHabitCount = db
+    .prepare("SELECT COUNT(*) as c FROM habits WHERE user_id = ? AND active = 1")
+    .get(userId).c;
+  if (activeHabitCount === 0) return 0;
+
+  const todayStr = toLocalDateStr(today);
+  const lookbackStart = addDaysToDateStr(todayStr, -MAX_STREAK_LOOKBACK_DAYS);
+
+  const rows = db
+    .prepare(
+      `SELECT log_date, COUNT(*) as completedCount
+       FROM habit_logs
+       WHERE user_id = ? AND completed = 1 AND log_date >= ? AND log_date <= ?
+       GROUP BY log_date`
+    )
+    .all(userId, lookbackStart, todayStr);
+
+  const completeDates = new Set(
+    rows.filter((r) => r.completedCount >= activeHabitCount).map((r) => r.log_date)
+  );
+
   const toDateStr = (d) => toLocalDateStr(d);
   let cursor = new Date(today);
 
-  if (!isDayComplete(userId, toDateStr(cursor))) {
+  if (!completeDates.has(toDateStr(cursor))) {
     cursor.setDate(cursor.getDate() - 1);
   }
 
   let streak = 0;
-  while (isDayComplete(userId, toDateStr(cursor))) {
+  while (completeDates.has(toDateStr(cursor))) {
     streak++;
     cursor.setDate(cursor.getDate() - 1);
   }
@@ -414,10 +498,145 @@ function getDietDatesInRange(userId, startDate, endDate) {
     .map((r) => r.diet_date);
 }
 
+// Wipes cached diets from a date onward (today and any future planned
+// days) - called whenever food_preference/regions/goals change, so the
+// next fetch regenerates a diet that reflects the new preferences instead
+// of silently reusing a stale cached one. Past days are left alone since
+// they reflect what was actually planned/eaten under the old preferences.
+function clearDietsFrom(userId, fromDate) {
+  db.prepare("DELETE FROM diets WHERE user_id = ? AND diet_date >= ?").run(userId, fromDate);
+}
+
+// ---------- Account export & deletion ----------
+
+// Same 0-5 dark-brown-to-bright-red scale the cycle calendar's color
+// picker and legend use (mobile/lib/theme.ts's periodColorScale /
+// periodColorLabels) - mirrored here so the export shows the same words
+// the user picked on screen instead of the raw number underneath them.
+const PERIOD_COLOR_LABELS = ["Dark brown", "Brown", "Rust", "Red-brown", "Red", "Bright red"];
+
+// Every table a user's PERSONAL data lives in, unbounded (no 14/30-day
+// limits like the normal app screens use) - this is specifically for the
+// "download everything" export, so it has to be the full history, not a
+// recent window. profile_picture is deliberately left out: it's a large
+// base64 blob, not something that belongs in a CSV, and not the kind of
+// thing someone downloading "my health data" is after.
+//
+// Deliberately does NOT include habits, habit_logs, or diets: those are
+// this app's own recommendation output (which habits it suggested, what
+// meals it planned), not something the user typed in - the export is for
+// the user's own entered data, not a copy of the product's logic/output.
+function getAllUserDataForExport(userId) {
+  const user = getUserById(userId);
+  if (!user) return null;
+
+  const profile = getUserProfile(userId);
+
+  const dailyLogs = db
+    .prepare(
+      `SELECT log_date, mood, energy, symptoms_json, note, created_at
+       FROM daily_logs WHERE user_id = ? ORDER BY log_date`
+    )
+    .all(userId)
+    .map((r) => ({
+      log_date: r.log_date,
+      mood: r.mood,
+      energy: r.energy,
+      symptoms: JSON.parse(r.symptoms_json || "[]").join("; "),
+      note: r.note,
+      created_at: r.created_at,
+    }));
+
+  const cycles = db
+    .prepare(
+      `SELECT id, period_start, period_end, flow, created_at
+       FROM cycles WHERE user_id = ? ORDER BY period_start`
+    )
+    .all(userId);
+
+  const periodDays = db
+    .prepare(
+      `SELECT log_date, cycle_id, flow, color
+       FROM period_days WHERE user_id = ? ORDER BY log_date`
+    )
+    .all(userId)
+    .map((r) => ({
+      log_date: r.log_date,
+      cycle_id: r.cycle_id,
+      flow: r.flow,
+      color: PERIOD_COLOR_LABELS[r.color] || r.color,
+    }));
+
+  return {
+    account: {
+      name: user.name || "",
+      email: user.email || "",
+      phone: user.phone || "",
+      created_at: user.created_at,
+    },
+    profile: profile
+      ? {
+          goals: (profile.goals || []).join("; "),
+          food_preference: profile.food_preference,
+          regions: (profile.regions || []).join("; "),
+          has_pcod: profile.has_pcod,
+          profile_type: profile.profile_type,
+          age: profile.age,
+          gender: profile.gender,
+          height_cm: profile.height_cm,
+          weight_kg: profile.weight_kg,
+        }
+      : null,
+    dailyLogs,
+    cycles,
+    periodDays,
+  };
+}
+
+// Deletes the account and everything tied to it, and records why in the
+// same breath. Every child table (profiles, daily_logs, cycles,
+// period_days, habits -> habit_logs, diets) cascades off `users` via
+// ON DELETE CASCADE, so the single DELETE below is enough - see
+// db/sqlite.js's schema and its `foreign_keys = ON` pragma.
+//
+// Both writes happen in one transaction: the feedback row and the account
+// deletion either both commit or neither does, so there's never a moment
+// where feedback exists for an account that's still there, or an account
+// vanishes with no record of why. Idempotent by construction - if the
+// user's already gone (e.g. a client retry after a dropped response),
+// this is a no-op that reports alreadyGone instead of erroring.
+function hardDeleteUserAccount(userId, feedback = {}) {
+  const user = getUserById(userId);
+  if (!user) return { deleted: false, alreadyGone: true };
+
+  const insertFeedback = db.prepare(
+    `INSERT INTO deletion_feedback (reason_code, note, account_age_days, app_version)
+     VALUES (?, ?, ?, ?)`
+  );
+  const deleteUser = db.prepare("DELETE FROM users WHERE id = ?");
+
+  const tx = db.transaction(() => {
+    insertFeedback.run(
+      feedback.reasonCode || "not_specified",
+      feedback.note || null,
+      feedback.accountAgeDays ?? null,
+      feedback.appVersion || null
+    );
+    deleteUser.run(userId);
+  });
+  tx();
+
+  return { deleted: true, alreadyGone: false };
+}
+
 module.exports = {
   createUser,
   getUserByEmail,
   getUserById,
+  getUserByPhone,
+  createUserByPhone,
+  setUserOtp,
+  clearUserOtp,
   getUserProfile,
   saveUserProfile,
   savePhenotypeAnswers,
@@ -442,4 +661,7 @@ module.exports = {
   getDietForToday,
   saveDiet,
   getDietDatesInRange,
+  clearDietsFrom,
+  getAllUserDataForExport,
+  hardDeleteUserAccount,
 };

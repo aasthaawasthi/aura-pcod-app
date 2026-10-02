@@ -90,12 +90,18 @@ export default function DietPlan() {
   const [monthYear, setMonthYear] = useState(new Date().getFullYear());
   const [monthMonth, setMonthMonth] = useState(new Date().getMonth() + 1);
   const [monthData, setMonthData] = useState<DietMonth | null>(null);
-  const [selectedDate, setSelectedDate] = useState(todayStr);
+  const [selectedDate, setSelectedDate] = useState<string | null>(todayStr);
+  // The date the account was created (YYYY-MM-DD) - there's no plate
+  // history before this, so it comes from the server (which knows it)
+  // rather than being guessed on the client. Starts null until the first
+  // month response arrives; it never changes after that.
+  const [joinedDate, setJoinedDate] = useState<string | null>(null);
 
   const loadMonth = useCallback(async (year: number, month: number) => {
     try {
       const data = await dietApi.month(year, month);
       setMonthData(data);
+      if (data.joinedDate) setJoinedDate(data.joinedDate);
     } catch (err: any) {
       setError(err?.message || "Could not load this month's plate.");
     }
@@ -104,6 +110,35 @@ export default function DietPlan() {
   useEffect(() => {
     if (view === "month") loadMonth(monthYear, monthMonth);
   }, [view, monthYear, monthMonth, loadMonth]);
+
+  // Whenever the visible month changes, jump the selection to the most
+  // useful date in it rather than leaving whatever was selected before
+  // (which usually isn't even in the new month, hence "no data shown"):
+  // - this month -> today
+  // - a future month -> its 1st, for planning ahead
+  // - a past month -> its last day, so you land on the most recent entry
+  // Clamped so nothing before the account's join date is ever selected;
+  // if the whole month predates the account, nothing is selected at all.
+  useEffect(() => {
+    const pad2 = (n: number) => String(n).padStart(2, "0");
+    const today = new Date();
+    const isCurrentMonth = monthYear === today.getFullYear() && monthMonth === today.getMonth() + 1;
+    const monthStartStr = `${monthYear}-${pad2(monthMonth)}-01`;
+    const lastDay = new Date(monthYear, monthMonth, 0).getDate();
+    const monthEndStr = `${monthYear}-${pad2(monthMonth)}-${pad2(lastDay)}`;
+
+    let candidate: string;
+    if (isCurrentMonth) candidate = todayStr;
+    else if (monthStartStr > todayStr) candidate = monthStartStr;
+    else candidate = monthEndStr;
+
+    if (joinedDate && monthEndStr < joinedDate) {
+      setSelectedDate(null);
+      return;
+    }
+    if (joinedDate && candidate < joinedDate) candidate = joinedDate;
+    setSelectedDate(candidate);
+  }, [monthYear, monthMonth, joinedDate, todayStr]);
 
   const changeMonth = (delta: number) => {
     let m = monthMonth + delta;
@@ -239,8 +274,17 @@ export default function DietPlan() {
                         const dateKey = `${monthYear}-${pad(monthMonth)}-${pad(day)}`;
                         const isToday = dateKey === todayStr;
                         const isSelected = dateKey === selectedDate;
+                        // No plate history exists from before the account
+                        // was created - mirrors how future dates are
+                        // already kept un-clickable on the check-in page.
+                        const isBeforeJoin = !!joinedDate && dateKey < joinedDate;
                         return (
-                          <Pressable key={di} style={styles.monthCell} onPress={() => setSelectedDate(dateKey)}>
+                          <Pressable
+                            key={di}
+                            style={styles.monthCell}
+                            disabled={isBeforeJoin}
+                            onPress={() => setSelectedDate(dateKey)}
+                          >
                             <View
                               style={[
                                 styles.monthDayBadge,
@@ -248,7 +292,7 @@ export default function DietPlan() {
                                 isSelected && styles.monthDayBadgeSelected,
                               ]}
                             >
-                              <Body style={{ fontSize: 12 }}>{day}</Body>
+                              <Body style={{ fontSize: 12, opacity: isBeforeJoin ? 0.3 : 1 }}>{day}</Body>
                             </View>
                           </Pressable>
                         );
@@ -259,7 +303,7 @@ export default function DietPlan() {
               )}
             </Card>
 
-            {selectedMonthDay && (
+            {monthData && selectedMonthDay && selectedMonthDay.breakfast && (
               <Card>
                 <Body style={{ fontFamily: "Manrope_700Bold", marginBottom: space.xs }}>
                   {formatDayLabel(selectedMonthDay.date, todayStr)}
@@ -274,6 +318,16 @@ export default function DietPlan() {
                     />
                   ))}
                 </View>
+              </Card>
+            )}
+
+            {monthData && (!selectedDate || !selectedMonthDay?.breakfast) && (
+              <Card>
+                <Muted>
+                  {joinedDate
+                    ? `No plate history here - your history starts from ${formatDayLabel(joinedDate, todayStr)}.`
+                    : "No check-ins yet for this month."}
+                </Muted>
               </Card>
             )}
           </View>

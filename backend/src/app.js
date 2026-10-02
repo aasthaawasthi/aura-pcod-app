@@ -7,7 +7,9 @@ const routes = require("./routes");
 const app = express();
 
 app.use(cors()); // mobile app has no fixed origin, so allow all for local dev
-app.use(express.json());
+// Default limit is 100kb, which a base64-encoded profile photo blows past
+// easily - raised so photo uploads from the camera/gallery picker succeed.
+app.use(express.json({ limit: "15mb" }));
 
 // Logs every incoming request. If you tap something in the app and nothing
 // shows up here, the request never reached this server - that means the

@@ -1,7 +1,9 @@
 const Database = require("better-sqlite3");
 const path = require("path");
 
-const dbPath = path.join(__dirname, "..", "..", "data.sqlite");
+// Overridable so test scripts can point at a throwaway file instead of
+// the real app database - see scripts/test-daily-log.js.
+const dbPath = process.env.AURA_DB_PATH || path.join(__dirname, "..", "..", "data.sqlite");
 const db = new Database(dbPath);
 
 db.pragma("journal_mode = WAL");
@@ -10,9 +12,12 @@ db.pragma("foreign_keys = ON");
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
+  phone TEXT,
+  email TEXT,
+  password_hash TEXT,
   name TEXT,
+  otp_code TEXT,
+  otp_expires_at TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -91,6 +96,23 @@ CREATE TABLE IF NOT EXISTS diets (
   diet_json TEXT NOT NULL,
   UNIQUE(user_id, diet_date)
 );
+
+-- Captured when someone deletes their account, so "why are people
+-- leaving" stays answerable in aggregate even though the account itself
+-- is gone. Deliberately has NO user_id/phone/email/name column at all -
+-- not nullable, just absent - so a row here can never be linked back to
+-- who wrote it, even by mistake later. Written in the same transaction
+-- as the account deletion (see db/index.js's hardDeleteUserAccount), so
+-- the feedback always exists exactly when the account doesn't, never the
+-- other way around.
+CREATE TABLE IF NOT EXISTS deletion_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reason_code TEXT NOT NULL,
+  note TEXT,
+  account_age_days INTEGER,
+  app_version TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
 `);
 
 // --- Lightweight migrations -------------------------------------------
@@ -104,8 +126,50 @@ function addColumnIfMissing(table, column, ddl) {
   }
 }
 
+// Users used to require email+password (NOT NULL). Phone+OTP login means
+// both are now optional, which SQLite can't express via ALTER TABLE - so
+// an existing DB with the old constraints gets its `users` table rebuilt
+// once, preserving all rows and every other table's foreign keys (they
+// reference the table by name, which is unchanged).
+function usersTableNeedsRebuild() {
+  const cols = db.prepare("PRAGMA table_info(users)").all();
+  const passwordCol = cols.find((c) => c.name === "password_hash");
+  return !!passwordCol && passwordCol.notnull === 1;
+}
+
+if (usersTableNeedsRebuild()) {
+  db.pragma("foreign_keys = OFF");
+  db.exec(`
+    CREATE TABLE users_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      phone TEXT,
+      email TEXT,
+      password_hash TEXT,
+      name TEXT,
+      otp_code TEXT,
+      otp_expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    INSERT INTO users_new (id, email, password_hash, name, created_at)
+      SELECT id, email, password_hash, name, created_at FROM users;
+    DROP TABLE users;
+    ALTER TABLE users_new RENAME TO users;
+  `);
+  db.pragma("foreign_keys = ON");
+}
+
 addColumnIfMissing("users", "phone", "phone TEXT");
 addColumnIfMissing("users", "profile_picture", "profile_picture TEXT");
+addColumnIfMissing("users", "otp_code", "otp_code TEXT");
+addColumnIfMissing("users", "otp_expires_at", "otp_expires_at TEXT");
+
+// Phone is the primary login identifier now - enforce uniqueness (but only
+// among rows that actually have one, since old email/password accounts may
+// not). Same for email, which remains unique when present.
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone ON users(phone) WHERE phone IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
+`);
 addColumnIfMissing("profiles", "gender", "gender TEXT");
 // Goals and regional cuisine preference are now multi-select - stored as a
 // JSON array string. The old singular `goal`/`region` columns are left in
